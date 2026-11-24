@@ -1,0 +1,422 @@
+#!/system/bin/sh
+# nothrottle - lock Android CPU/GPU clocks and silence vendor thermal daemons.
+# Root only. No flashing, no /system or /vendor writes, dm-verity untouched.
+
+VERSION="0.1.0"
+SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+[ -z "$SELF_DIR" ] && SELF_DIR="."
+STATE_DIR="${NOTHROTTLE_STATE:-/data/local/tmp/nothrottle}"
+STATE_FILE="$STATE_DIR/state"
+GUARD_PID_FILE="$STATE_DIR/guard.pid"
+LOG="$STATE_DIR/nothrottle.log"
+
+say()  { printf '%s\n' "$*"; }
+info() { printf '  %s\n' "$*"; }
+warn() { printf '! %s\n' "$*" >&2; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+need_root() {
+  [ "$(id -u)" = "0" ] || die "root required: su -c 'sh $0 $*'"
+}
+
+mkdir -p "$STATE_DIR" 2>/dev/null
+[ -w "$STATE_DIR" ] || die "cannot write $STATE_DIR (root?)"
+
+load_profiles() {
+  PROFILE_NAME="generic Android"
+  SVC_THERMAL=""
+  SVC_POWER=""
+  ZONES_DISABLE=""
+  GUARD_SOC=80000
+  GUARD_BAT=47000
+  GPU_MIN_PCT=50
+
+  [ -f "$SELF_DIR/profiles/generic.conf" ] && . "$SELF_DIR/profiles/generic.conf"
+
+  HW=$(getprop ro.hardware)
+  PLAT=$(getprop ro.board.platform)
+  SOCM=$(getprop ro.soc.manufacturer)
+  BRAND=$(getprop ro.product.brand)
+
+  case "$HW $PLAT $SOCM" in
+    *mt*|*MT*|*mediatek*|*MTK*) VENDOR=mtk ;;
+    *qcom*|*QCOM*|*sm[0-9]*|*msm*|*taro*|*kalama*) VENDOR=qualcomm ;;
+    *exynos*|*Exynos*|*s5e*|*universal*) VENDOR=exynos ;;
+    *) VENDOR=generic ;;
+  esac
+  [ -f "$SELF_DIR/profiles/$VENDOR.conf" ] && . "$SELF_DIR/profiles/$VENDOR.conf"
+  [ "$BRAND" = "samsung" ] && [ -f "$SELF_DIR/profiles/samsung.conf" ] && . "$SELF_DIR/profiles/samsung.conf"
+}
+
+find_gpu() {
+  GPU=""
+  for d in /sys/class/devfreq/* /sys/class/kgsl/kgsl-3d0/devfreq; do
+    [ -d "$d" ] || continue
+    n=$(cat "$d/name" 2>/dev/null)
+    [ -z "$n" ] && n=$(basename "$d")
+    case "$n" in
+      *gpu*|*GPU*|*mali*|*Mali*|*kgsl*|*adreno*|*Adreno*|*g3d*|*GPUSS*|*gpufreq*) GPU="$d"; break ;;
+    esac
+  done
+}
+
+svc_running() { [ "$(getprop init.svc.$1)" = "running" ]; }
+
+save_state() {
+  : > "$STATE_FILE"
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    printf 'policy|%s|%s|%s|%s\n' "$p" \
+      "$(cat "$p/scaling_governor" 2>/dev/null)" \
+      "$(cat "$p/scaling_max_freq" 2>/dev/null)" \
+      "$(cat "$p/scaling_min_freq" 2>/dev/null)" >> "$STATE_FILE"
+  done
+  find_gpu
+  if [ -n "$GPU" ]; then
+    printf 'gpu|%s|%s|%s|%s\n' "$GPU" \
+      "$(cat "$GPU/governor" 2>/dev/null)" \
+      "$(cat "$GPU/max_freq" 2>/dev/null)" \
+      "$(cat "$GPU/min_freq" 2>/dev/null)" >> "$STATE_FILE"
+  fi
+  for z in /sys/class/thermal/thermal_zone*; do
+    [ -e "$z/mode" ] || continue
+    t=$(cat "$z/type" 2>/dev/null)
+    case "$t" in
+      "") continue ;;
+    esac
+    printf 'zone|%s|%s\n' "$z" "$(cat "$z/mode" 2>/dev/null)" >> "$STATE_FILE"
+  done
+  for s in $SVC_THERMAL $SVC_POWER; do
+    svc_running "$s" && printf 'svc|%s\n' "$s" >> "$STATE_FILE"
+  done
+}
+
+zone_match() {
+  for pat in $ZONES_DISABLE; do
+    case "$1" in $pat) return 0 ;; esac
+  done
+  return 1
+}
+
+pin_cpu() {
+  n=0
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    mx=$(cat "$p/cpuinfo_max_freq" 2>/dev/null) || continue
+    govs=$(cat "$p/scaling_available_governors" 2>/dev/null)
+    case " $govs " in
+      *" performance "*)
+        echo performance > "$p/scaling_governor" 2>/dev/null
+        echo "$mx" > "$p/scaling_max_freq" 2>/dev/null
+        echo "$mx" > "$p/scaling_min_freq" 2>/dev/null
+        ;;
+      *)
+        echo "$mx" > "$p/scaling_min_freq" 2>/dev/null
+        echo "$mx" > "$p/scaling_max_freq" 2>/dev/null
+        ;;
+    esac
+    info "$(basename "$p"): $(cat "$p/scaling_governor" 2>/dev/null) $(cat "$p/scaling_min_freq" 2>/dev/null)-$(cat "$p/scaling_max_freq" 2>/dev/null)"
+    n=$((n+1))
+  done
+  [ "$n" -gt 0 ] || warn "no cpufreq policies found - CPU untouched"
+}
+
+pin_gpu() {
+  find_gpu
+  if [ -z "$GPU" ]; then
+    warn "no GPU devfreq node found - GPU untouched"
+    return
+  fi
+  if [ "$GPU_MAX" = "1" ]; then
+    ga=$(cat "$GPU/available_governors" 2>/dev/null)
+    case " $ga " in
+      *" performance "*) echo performance > "$GPU/governor" 2>/dev/null ;;
+      *) mx=$(cat "$GPU/max_freq" 2>/dev/null); [ -n "$mx" ] && echo "$mx" > "$GPU/min_freq" 2>/dev/null ;;
+    esac
+  else
+    mx=$(cat "$GPU/max_freq" 2>/dev/null)
+    if [ -n "$mx" ]; then
+      want=$(( mx * GPU_MIN_PCT / 100 ))
+      echo "$want" > "$GPU/min_freq" 2>/dev/null
+    fi
+  fi
+  info "gpu $(basename "$GPU"): $(cat "$GPU/governor" 2>/dev/null) $(cat "$GPU/min_freq" 2>/dev/null)-$(cat "$GPU/max_freq" 2>/dev/null)"
+}
+
+disable_zones() {
+  [ -n "$ZONES_DISABLE" ] || return 0
+  [ "$NO_ZONES" = "1" ] && { info "zone disable skipped (--no-zones)"; return 0; }
+  n=0
+  for z in /sys/class/thermal/thermal_zone*; do
+    [ -e "$z/mode" ] || continue
+    t=$(cat "$z/type" 2>/dev/null)
+    if zone_match "$t"; then
+      echo disabled > "$z/mode" 2>/dev/null && n=$((n+1))
+    fi
+  done
+  info "thermal zones disabled: $n (pattern: $ZONES_DISABLE)"
+}
+
+stop_thermal() {
+  for s in $SVC_THERMAL $SVC_POWER; do
+    if svc_running "$s"; then
+      stop "$s" 2>/dev/null
+      info "stopped service: $s"
+    fi
+  done
+}
+
+start_guard() {
+  soc=${NOTHROTTLE_SOC:-$GUARD_SOC}
+  bat=${NOTHROTTLE_BAT:-$GUARD_BAT}
+  if [ -f "$GUARD_PID_FILE" ]; then
+    old=$(cat "$GUARD_PID_FILE" 2>/dev/null)
+    [ -n "$old" ] && [ -d "/proc/$old" ] && kill "$old" 2>/dev/null
+  fi
+  nohup sh "$SELF_DIR/guard.sh" "$soc" "$bat" "$SELF_DIR" "$STATE_DIR" >> "$LOG" 2>&1 &
+  echo $! > "$GUARD_PID_FILE"
+  info "guard: pid $(cat "$GUARD_PID_FILE") limits soc>$soc bat>$bat"
+}
+
+kill_guard() {
+  if [ -f "$GUARD_PID_FILE" ]; then
+    g=$(cat "$GUARD_PID_FILE" 2>/dev/null)
+    if [ -n "$g" ] && [ -d "/proc/$g" ] && [ "$g" != "$$" ]; then
+      kill "$g" 2>/dev/null
+    fi
+    rm -f "$GUARD_PID_FILE"
+  fi
+  pkill -f "guard.sh" 2>/dev/null
+}
+
+cmd_apply() {
+  need_root apply
+  load_profiles
+  if [ -f "$STATE_FILE" ]; then
+    die "already applied (state in $STATE_FILE). run 'restore' first, or 'apply --force'"
+  fi
+  say "nothrottle $VERSION - $PROFILE_NAME ($VENDOR) on $BRAND"
+  save_state
+  pin_cpu
+  pin_gpu
+  disable_zones
+  stop_thermal
+  start_guard
+  say "applied. run 'nothrottle restore' to undo."
+}
+
+cmd_restore() {
+  need_root restore
+  load_profiles
+  [ "$NOTHROTTLE_FROM_GUARD" = "1" ] || kill_guard
+  if [ ! -f "$STATE_FILE" ]; then
+    warn "no saved state; restoring best-effort defaults"
+    for s in $SVC_THERMAL $SVC_POWER; do
+      [ "$(getprop init.svc.$s)" = "stopped" ] && start "$s" 2>/dev/null
+    done
+    for z in /sys/class/thermal/thermal_zone*; do
+      [ -e "$z/mode" ] && echo enabled > "$z/mode" 2>/dev/null
+    done
+    say "restored (best-effort)"
+    return 0
+  fi
+  while IFS='|' read -r k a b c d; do
+    case "$k" in
+      policy)
+        [ -d "$a" ] || continue
+        # governor first: the kernel then allows max to drop below the pinned min
+        [ -n "$b" ] && echo "$b" > "$a/scaling_governor" 2>/dev/null
+        [ -n "$c" ] && echo "$c" > "$a/scaling_max_freq" 2>/dev/null
+        [ -n "$d" ] && echo "$d" > "$a/scaling_min_freq" 2>/dev/null
+        info "$(basename "$a"): $b $d-$c"
+        ;;
+      gpu)
+        [ -d "$a" ] || continue
+        [ -n "$d" ] && echo "$d" > "$a/min_freq" 2>/dev/null
+        [ -n "$c" ] && echo "$c" > "$a/max_freq" 2>/dev/null
+        [ -n "$b" ] && echo "$b" > "$a/governor" 2>/dev/null
+        info "gpu $(basename "$a"): $b"
+        ;;
+      zone)
+        [ -e "$a/mode" ] && [ -n "$b" ] && echo "$b" > "$a/mode" 2>/dev/null
+        ;;
+      svc)
+        [ -n "$a" ] && svc_running "$a" || start "$a" 2>/dev/null
+        info "started service: $a"
+        ;;
+    esac
+  done < "$STATE_FILE"
+  rm -f "$STATE_FILE"
+  say "restored. reboot also clears everything."
+}
+
+cmd_status() {
+  load_profiles
+  say "nothrottle $VERSION - $PROFILE_NAME ($VENDOR)"
+  GPID=$(cat "$GUARD_PID_FILE" 2>/dev/null)
+  if [ -n "$GPID" ] && [ -d "/proc/$GPID" ]; then
+    info "guard: running (pid $GPID)"
+  else
+    info "guard: not running"
+  fi
+  [ -f "$STATE_FILE" ] && info "state: applied" || info "state: not applied"
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    info "$(basename "$p"): gov=$(cat "$p/scaling_governor" 2>/dev/null) cur=$(cat "$p/scaling_cur_freq" 2>/dev/null) max=$(cat "$p/scaling_max_freq" 2>/dev/null)"
+  done
+  find_gpu
+  [ -n "$GPU" ] && info "gpu: gov=$(cat "$GPU/governor" 2>/dev/null) cur=$(cat "$GPU/cur_freq" 2>/dev/null) max=$(cat "$GPU/max_freq" 2>/dev/null)"
+  for s in $SVC_THERMAL $SVC_POWER; do
+    [ -n "$s" ] && info "service $s: $(getprop init.svc.$s)"
+  done
+  soc=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+  info "soc_zone0: $soc"
+}
+
+cmd_doctor() {
+  say "== nothrottle doctor =="
+  say "model: $(getprop ro.product.model) / $(getprop ro.product.device)"
+  say "brand: $(getprop ro.product.brand)  manufacturer: $(getprop ro.product.manufacturer)"
+  say "hardware: $(getprop ro.hardware)  platform: $(getprop ro.board.platform)  soc: $(getprop ro.soc.model)"
+  say "android: $(getprop ro.build.version.release) sdk $(getprop ro.build.version.sdk)"
+  say "root uid: $(id -u)  selinux: $(getenforce 2>/dev/null)"
+  say "kernel: $(uname -r)"
+  say "profile: $PROFILE_NAME ($VENDOR)"
+  say ""
+  say "== cpufreq policies =="
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    info "$p cpus=$(cat "$p/affected_cpus" 2>/dev/null)"
+    info "  gov=$(cat "$p/scaling_governor" 2>/dev/null) avail=[$(cat "$p/scaling_available_governors" 2>/dev/null)]"
+    info "  min=$(cat "$p/scaling_min_freq" 2>/dev/null) max=$(cat "$p/scaling_max_freq" 2>/dev/null) cpuinfo_max=$(cat "$p/cpuinfo_max_freq" 2>/dev/null)"
+  done
+  say ""
+  say "== gpu devfreq =="
+  for d in /sys/class/devfreq/* /sys/class/kgsl/kgsl-3d0/devfreq; do
+    [ -d "$d" ] || continue
+    info "$d name=$(cat "$d/name" 2>/dev/null) gov=$(cat "$d/governor" 2>/dev/null) avail=[$(cat "$d/available_governors" 2>/dev/null)]"
+    info "  min=$(cat "$d/min_freq" 2>/dev/null) max=$(cat "$d/max_freq" 2>/dev/null) cur=$(cat "$d/cur_freq" 2>/dev/null)"
+  done
+  say ""
+  say "== thermal zones =="
+  for z in /sys/class/thermal/thermal_zone*; do
+    [ -d "$z" ] || continue
+    info "$(basename "$z") type=$(cat "$z/type" 2>/dev/null) temp=$(cat "$z/temp" 2>/dev/null) mode=$(cat "$z/mode" 2>/dev/null) trip=$(cat "$z/trip_point_0_temp" 2>/dev/null)"
+  done
+  say ""
+  say "== thermal/power services =="
+  for s in thermal_core thermald thermal-engine perfd vendor.thermal-hal-2-0.mtk vendor.thermal-hal-1-0.qti power-hal-1-0 vendor.mediatek.hardware.mtkpower@1.0-service; do
+    st=$(getprop init.svc.$s)
+    [ -n "$st" ] && info "$s: $st"
+  done
+  say ""
+  say "== cooling devices =="
+  for c in /sys/class/thermal/cooling_device*; do
+    [ -d "$c" ] || continue
+    info "$(basename "$c") type=$(cat "$c/type" 2>/dev/null) cur=$(cat "$c/cur_state" 2>/dev/null) max=$(cat "$c/max_state" 2>/dev/null)"
+  done
+}
+
+cmd_debloat() {
+  need_root debloat
+  f="$1"
+  [ -f "$f" ] || die "usage: nothrottle debloat <list-file> [--restore]"
+  if [ "$2" = "--restore" ]; then
+    while read -r p; do
+      case "$p" in ""|\#*) continue ;; esac
+      pm enable "$p" >/dev/null 2>&1 && info "enabled $p"
+    done < "$f"
+    say "re-enabled packages from $f"
+    return
+  fi
+  while read -r p; do
+    case "$p" in ""|\#*) continue ;; esac
+    pm list packages 2>/dev/null | grep -q "package:$p$" || { info "skip (not installed): $p"; continue; }
+    pm disable-user --user 0 "$p" >/dev/null 2>&1 && info "disabled $p"
+  done < "$f"
+  say "done. re-enable with: nothrottle debloat $f --restore"
+}
+
+cmd_aot() {
+  need_root aot
+  [ $# -gt 0 ] || die "usage: nothrottle aot <package>..."
+  for p in "$@"; do
+    info "compiling $p ..."
+    cmd package compile -m speed -f "$p" >/dev/null 2>&1 && info "ok $p" || warn "failed $p"
+  done
+}
+
+cmd_animate() {
+  need_root animate
+  s=${1:-0.5}
+  for k in window_animation_scale transition_animation_scale animator_duration_scale; do
+    settings put global "$k" "$s" && info "$k=$s"
+  done
+}
+
+cmd_install_boot() {
+  need_root install-boot
+  [ -d /data/adb/service.d ] || die "/data/adb/service.d not found (Magisk/KernelSU required)"
+  printf '#!/system/bin/sh\nsleep 45\nsh %s/nothrottle apply --force >/dev/null 2>&1\n' "$SELF_DIR" > /data/adb/service.d/zz_nothrottle.sh
+  chmod 755 /data/adb/service.d/zz_nothrottle.sh
+  say "installed /data/adb/service.d/zz_nothrottle.sh (runs 45s after boot)"
+  warn "only useful if root is available at boot (not on exploit-only root)"
+}
+
+cmd_uninstall_boot() {
+  need_root uninstall-boot
+  rm -f /data/adb/service.d/zz_nothrottle.sh
+  say "removed boot hook"
+}
+
+usage() {
+  cat <<EOF
+nothrottle $VERSION - lock clocks, silence vendor thermal daemons (root)
+
+usage: sh nothrottle <command> [options]
+
+  apply [--gpu-max] [--no-zones] [--force]   lock clocks, stop vendor thermal, start guard
+  restore                                    undo everything (guard calls this too)
+  status                                     what is active right now
+  doctor                                     dump device capabilities (paste into a device report)
+  debloat <list> [--restore]                 disable/enable packages from a list
+  aot <pkg>...                               AOT-compile packages (cmd package compile -m speed)
+  animate [scale]                            set animation scales (default 0.5)
+  install-boot | uninstall-boot              optional /data/adb/service.d hook
+
+env: NOTHROTTLE_SOC (millidegC), NOTHROTTLE_BAT (millidegC), NOTHROTTLE_STATE (dir)
+EOF
+}
+
+main() {
+  cmd=${1:-}; shift 2>/dev/null
+  GPU_MAX=0; NO_ZONES=0; FORCE=0
+  args=""
+  for a in "$@"; do
+    case "$a" in
+      --gpu-max) GPU_MAX=1 ;;
+      --no-zones) NO_ZONES=1 ;;
+      --force) FORCE=1 ;;
+      *) args="$args $a" ;;
+    esac
+  done
+  eval "set -- $args"
+
+  case "$cmd" in
+    apply)
+      if [ "$FORCE" = "1" ] && [ -f "$STATE_FILE" ]; then rm -f "$STATE_FILE"; fi
+      cmd_apply ;;
+    restore) cmd_restore ;;
+    status) cmd_status ;;
+    doctor) load_profiles; cmd_doctor ;;
+    debloat) cmd_debloat "$@" ;;
+    aot) cmd_aot "$@" ;;
+    animate) cmd_animate "$@" ;;
+    install-boot) cmd_install_boot ;;
+    uninstall-boot) cmd_uninstall_boot ;;
+    ""|-h|--help|help) usage ;;
+    *) warn "unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

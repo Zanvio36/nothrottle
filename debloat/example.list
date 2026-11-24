@@ -1,0 +1,16 @@
+# Example list - safe, widely present on Samsung devices.
+# Verify each package exists first: pm list packages | grep <name>
+
+# Facebook stubs (not the main app)
+com.facebook.appmanager
+com.facebook.services
+com.facebook.system
+com.facebook.aura
+
+# Samsung/Bixby extras you probably do not use
+com.samsung.android.bixby.agent
+com.samsung.android.bixby.wakeup
+com.samsung.android.app.spage
+
+# Duplicate/legacy browsers
+com.android.browser

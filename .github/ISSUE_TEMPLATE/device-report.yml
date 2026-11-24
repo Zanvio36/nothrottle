@@ -1,0 +1,36 @@
+name: Device report
+description: Report a phone so support can be added
+title: "device: <model> (<soc>)"
+labels: [device-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `su -c 'sh nothrottle doctor'` and paste the output below.
+        Also say what happened with `apply` -> `status` -> `restore`.
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "SM-A066B / One UI 8.5 / Android 16"
+    validations:
+      required: true
+  - type: dropdown
+    id: soc
+    attributes:
+      label: SoC family
+      options: [MediaTek, Qualcomm, Exynos, Google Tensor, Unisoc, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor output
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened
+      description: "Did clocks actually hold? Did the daemon restart? Any crash?"
