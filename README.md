@@ -10,6 +10,9 @@ su -c 'sh nothrottle restore'    # undo everything
 
 > Root required (Magisk or KernelSU). Nothing is flashed, `/system` and `/vendor` are never written, verified boot stays green.
 
+> **Tested on exactly one phone:** Samsung Galaxy A06 5G (SM-A066B, Dimensity 6300, Android 16, One UI 8.5).
+> Every other device, including other Samsungs, is untested. The code is written to be portable - the profile system is the only device-specific part - but nobody has run it there yet. Run `doctor` first.
+
 ## The problem
 
 Most phones do not throttle in the kernel. They run a userspace daemon - `thermal_core` on MediaTek, `thermal-engine` on Qualcomm, `thermald` on Exynos - that watches temperature and pushes a **clock limit** through the power HAL.
@@ -82,10 +85,10 @@ NOTHROTTLE_SOC=90000 NOTHROTTLE_BAT=50000 su -c 'sh nothrottle apply'
 
 | SoC family | Thermal daemon | Status |
 |---|---|---|
-| MediaTek | `thermal_core` | tested on Dimensity 6300 (SM-A066B, Android 16) |
-| Qualcomm | `thermal-engine` | profile included, needs reports |
-| Exynos | `thermald` | profile included, needs reports |
-| other | none found | generic profile only |
+| MediaTek | `thermal_core` | tested: Galaxy A06 5G only |
+| Qualcomm | `thermal-engine` | untested, profile included |
+| Exynos | `thermald` | untested, profile included |
+| other | none found | untested, generic profile only |
 
 Snapdragon and Exynos kernels often do real mitigation in `tsens`/thermal zones, so those profiles intentionally do **not** disable zones. The guard is your safety net.
 
@@ -111,7 +114,7 @@ See [docs/how-it-works.md](docs/how-it-works.md) and [docs/risks.md](docs/risks.
 **Does this unlock my bootloader?** No. It needs root, nothing else.
 **Does it survive a reboot?** No. Root itself may not survive; re-run `apply` after boot.
 **Why not just disable thermal zones?** On MTK the daemon ignores them. On Qualcomm they are the real mitigation - disabling them is how phones cook.
-**Will it work on my phone?** Run `doctor`. If it finds policies and a throttle daemon, the generic/MTK path works.
+**Will it work on my phone?** It has only been run on a Galaxy A06 5G. On anything else it is untested - run `doctor`, and open a device report with the output.
 
 ## License
 
