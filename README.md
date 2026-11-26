@@ -65,6 +65,7 @@ Read the doctor output once. If the profile picked the wrong vendor, copy a prof
 | `soften` | drop the frequency floor, keep the ceiling and keep vendor thermal off (guard calls this first) |
 | `status` | current governor, min/max, guard pid, service state, softened or not |
 | `restore` | put back every saved value, restart daemons, kill guard |
+| `revert [--dry-run]` | `restore` + `ram --restore` + re-enable every disabled package (plain stock phone) |
 | `debloat <list> [--restore]` | disable/enable packages from a list file |
 | `aot <pkg>...` | AOT compile apps (`cmd package compile -m speed`) |
 | `animate [scale]` | animation scales, default `0.5` |
@@ -95,7 +96,8 @@ What the buttons do:
 | **GAME MODE** | `nothrottle ram` then `nothrottle apply --game --force` |
 | **Memory tune only** | `nothrottle ram` (the VM values above) |
 | **Refresh status** | reads governors, guard pid, `thermal_core` state, free memory |
-| **Restore stock** | `nothrottle restore` and `nothrottle ram --restore` |
+| **Restore stock (clocks + memory)** | `nothrottle restore` and `nothrottle ram --restore` |
+| **FULL STOCK — also re-enable apps** | `nothrottle revert`: the above plus every disabled package back on (asks for a second tap) |
 
 The page also shows a plain-text fallback with the exact shell commands if the WebUI bridge is missing (older managers). The module ships its own copy of the toolkit in `toolkit/`, so it does not depend on `/data/local/tmp/nothrottle`.
 

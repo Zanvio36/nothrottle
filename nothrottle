@@ -292,6 +292,40 @@ cmd_restore() {
   say "restored. reboot also clears everything."
 }
 
+re_enable_packages() {
+  n=0; f=0
+  for p in $(pm list packages -d 2>/dev/null | sed 's/^package://'); do
+    if [ "$DRY" = "1" ]; then
+      echo "  would enable: $p"
+      n=$((n+1))
+      continue
+    fi
+    if pm enable --user 0 "$p" >/dev/null 2>&1; then
+      n=$((n+1))
+    else
+      f=$((f+1))
+      warn "could not enable: $p"
+    fi
+  done
+  if [ "$DRY" = "1" ]; then
+    info "dry run: $n package(s) would be re-enabled"
+  else
+    info "re-enabled $n package(s), failed $f"
+    [ "$f" = "0" ] || warn "a few packages live under another user or are managed by the system profile"
+  fi
+}
+
+cmd_revert() {
+  need_root revert
+  load_profiles
+  say "nothrottle $VERSION - full revert"
+  cmd_restore
+  cmd_ram restore
+  say "re-enabling disabled packages"
+  re_enable_packages
+  [ "$DRY" = "1" ] || say "reverted. reboot to let every restored app settle."
+}
+
 cmd_status() {
   load_profiles
   say "nothrottle $VERSION - $PROFILE_NAME ($VENDOR)"
@@ -469,7 +503,9 @@ usage: sh nothrottle <command> [options]
   apply [--game] [--gpu-max] [--no-zones] [--force]
                                              lock clocks, stop vendor thermal, start guard
                                              --game: GPU governor=performance, guard 92C/45C
-  restore                                    undo everything (guard calls this too)
+  restore                                    undo the clock/thermal lock (guard calls this too)
+  revert [--dry-run]                         restore + undo the memory tune + re-enable every
+                                             disabled package (back to a plain stock phone)
   soften                                     let clocks drop, keep vendor thermal off
   status                                     what is active right now
   doctor                                     dump device capabilities (paste into a device report)
@@ -480,6 +516,8 @@ usage: sh nothrottle <command> [options]
                                              install-boot; --restore puts stock values back
   install-boot | uninstall-boot              optional /data/adb/service.d hook (applies lock + ram)
 
+flags: --game --gpu-max --no-zones --force --dry-run
+
 env: NOTHROTTLE_SOC, NOTHROTTLE_BAT, NOTHROTTLE_SOC_SOFT (millidegC),
      NOTHROTTLE_STATE (dir)
 EOF
@@ -487,7 +525,7 @@ EOF
 
 main() {
   cmd=${1:-}; shift 2>/dev/null
-  GPU_MAX=0; NO_ZONES=0; FORCE=0; GAME=0
+  GPU_MAX=0; NO_ZONES=0; FORCE=0; GAME=0; DRY=0
   args=""
   for a in "$@"; do
     case "$a" in
@@ -495,6 +533,7 @@ main() {
       --no-zones) NO_ZONES=1 ;;
       --force) FORCE=1 ;;
       --game) GAME=1 ;;
+      --dry-run) DRY=1 ;;
       *) args="$args $a" ;;
     esac
   done
@@ -506,6 +545,7 @@ main() {
       cmd_apply ;;
     soften) GAME=0; cmd_soften ;;
     restore) cmd_restore ;;
+    revert) cmd_revert ;;
     status) cmd_status ;;
     doctor) load_profiles; cmd_doctor ;;
     debloat) cmd_debloat "$@" ;;

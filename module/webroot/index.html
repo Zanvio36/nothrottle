@@ -47,7 +47,8 @@
 <button id="b_game">GAME MODE — max clocks + guard</button>
 <button id="b_ram" class="ghost">Memory tune only</button>
 <button id="b_status" class="ghost">Refresh status</button>
-<button id="b_restore" class="danger">Restore stock</button>
+<button id="b_restore" class="danger">Restore stock (clocks + memory)</button>
+<button id="b_full" class="danger">FULL STOCK — also re-enable apps</button>
 
 <div class="card">
   <div class="sub" style="margin:0 0 8px">output</div>
@@ -63,7 +64,7 @@ function $(id){ return document.getElementById(id); }
 
 function setBusy(b){
   busy = b;
-  ["b_game","b_ram","b_status","b_restore"].forEach(function(id){ $(id).disabled = b; });
+  ["b_game","b_ram","b_status","b_restore","b_full"].forEach(function(id){ $(id).disabled = b; });
 }
 
 function log(s){
@@ -149,6 +150,24 @@ $("b_status").onclick = function(){
 };
 $("b_restore").onclick = function(){
   act("RESTORE STOCK", "sh " + T + "/nothrottle restore; sh " + T + "/nothrottle ram --restore");
+};
+
+var armed = false, armTimer = null;
+function disarm(){
+  armed = false;
+  clearTimeout(armTimer);
+  $("b_full").textContent = "FULL STOCK — also re-enable apps";
+}
+$("b_full").onclick = function(){
+  if (busy) return;
+  if (!armed) {
+    armed = true;
+    $("b_full").textContent = "Tap again to confirm — apps come back";
+    armTimer = setTimeout(disarm, 6000);
+    return;
+  }
+  disarm();
+  act("FULL STOCK", "sh " + T + "/nothrottle revert");
 };
 
 readStatus().then(function(out){ log(out || "ready"); });
