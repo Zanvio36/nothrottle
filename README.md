@@ -87,7 +87,15 @@ Defaults: soft **75 C**, hard **80 C** SOC, hard **47 C** battery. `apply --game
 
 `module/` is an optional KernelSU/APatch module that puts a small UI inside your root manager - no APK to build, no separate install, and no background service. It calls the same commands you would type.
 
-Install it by zipping the contents of `module/` (`module.prop` at the zip root) and installing that zip from the manager's **Modules** tab, or by copying the folder to `/data/adb/modules/nothrottle-webui`. The module page then shows a **WebUI** button.
+The ready-made zip is committed at [`dist/nothrottle-webui-0.4.0.zip`](dist/nothrottle-webui-0.4.0.zip): download it and install it from the manager's **Modules** tab (**Install from storage**), or copy the folder to `/data/adb/modules/nothrottle-webui`. The module page then shows a **WebUI** button.
+
+To rebuild the zip after editing `module/`:
+
+```sh
+node tools/mkzip.js module dist/nothrottle-webui-0.4.0.zip
+```
+
+The builder writes stored entries with forward-slash names on purpose - `Compress-Archive` on Windows puts backslashes in the entry names and the manager then rejects the zip.
 
 What the buttons do:
 
@@ -182,6 +190,10 @@ See [docs/how-it-works.md](docs/how-it-works.md) and [docs/risks.md](docs/risks.
 **Why not just disable thermal zones?** On MTK the daemon ignores them. On Qualcomm they are the real mitigation - disabling them is how phones cook.
 **My game lags after ~10 minutes. What is happening?** Either the guard restored stock (check `nothrottle.log` for `SOFTEN`/`TRIGGER`), or a reboot cleared the lock, or the phone ran out of RAM. 3-4 GB devices throttle on memory pressure regardless of clocks. Use `apply --game`.
 **Will it work on my phone?** It has only been run on a Galaxy A06 5G. On anything else it is untested - run `doctor`, and open a device report with the output.
+
+## Author
+
+Built and tested by **Zanvio36** ([@Zanvio36](https://github.com/Zanvio36)) on a Samsung Galaxy A06 5G (SM-A066B), MediaTek Dimensity 6300, Android 16 / One UI 8.5, rooted with KernelSU. Everything in this repo that was verified on hardware was verified on that one phone. See [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ## License
 

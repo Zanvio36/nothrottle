@@ -2,7 +2,7 @@
 # nothrottle - lock Android CPU/GPU clocks and silence vendor thermal daemons.
 # Root only. No flashing, no /system or /vendor writes, dm-verity untouched.
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 [ -z "$SELF_DIR" ] && SELF_DIR="."
 STATE_DIR="${NOTHROTTLE_STATE:-/data/local/tmp/nothrottle}"
