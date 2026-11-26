@@ -99,6 +99,17 @@ What the buttons do:
 | **Restore stock (clocks + memory)** | `nothrottle restore` and `nothrottle ram --restore` |
 | **FULL STOCK — also re-enable apps** | `nothrottle revert`: the above plus every disabled package back on (asks for a second tap) |
 
+Which one do you want?
+
+| Situation | Tap |
+|---|---|
+| About to play a game | **GAME MODE** - one tap, the memory tune is included |
+| Finished gaming, normal use, want battery | **NORMAL / BATTERY** - stock clocks, memory tune kept |
+| Everything back to factory clocks and memory | **Restore stock (clocks + memory)** |
+| Every disabled app back too | **FULL STOCK** (tap twice) |
+
+Clocks never survive a reboot, so after every boot (and every root re-gain) you tap one button again.
+
 The page also shows a plain-text fallback with the exact shell commands if the WebUI bridge is missing (older managers). The module ships its own copy of the toolkit in `toolkit/`, so it does not depend on `/data/local/tmp/nothrottle`.
 
 > Root that is re-gained after each boot (exploit-based, loaded as a module) means nothing can run at boot - the WebUI is the point: open the manager, tap once, done.

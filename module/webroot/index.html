@@ -45,7 +45,8 @@
 </div>
 
 <button id="b_game">GAME MODE — max clocks + guard</button>
-<button id="b_ram" class="ghost">Memory tune only</button>
+<button id="b_normal" class="ghost">NORMAL / BATTERY — stock clocks, keep memory tune</button>
+<button id="b_ram" class="ghost">Memory tune only (no clock change)</button>
 <button id="b_status" class="ghost">Refresh status</button>
 <button id="b_restore" class="danger">Restore stock (clocks + memory)</button>
 <button id="b_full" class="danger">FULL STOCK — also re-enable apps</button>
@@ -64,7 +65,7 @@ function $(id){ return document.getElementById(id); }
 
 function setBusy(b){
   busy = b;
-  ["b_game","b_ram","b_status","b_restore","b_full"].forEach(function(id){ $(id).disabled = b; });
+  ["b_game","b_normal","b_ram","b_status","b_restore","b_full"].forEach(function(id){ $(id).disabled = b; });
 }
 
 function log(s){
@@ -139,6 +140,9 @@ function act(label, cmd){
 
 $("b_game").onclick = function(){
   act("GAME MODE", "sh " + T + "/nothrottle ram; sh " + T + "/nothrottle apply --game --force");
+};
+$("b_normal").onclick = function(){
+  act("NORMAL / BATTERY", "sh " + T + "/nothrottle restore; sh " + T + "/nothrottle ram");
 };
 $("b_ram").onclick = function(){
   act("MEMORY TUNE", "sh " + T + "/nothrottle ram");
