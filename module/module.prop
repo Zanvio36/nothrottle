@@ -1,0 +1,6 @@
+id=nothrottle-webui
+name=nothrottle
+version=0.3.0
+versionCode=3
+author=Zanvio36
+description=One-tap clock lock and memory tune for rooted Android. Opens as a WebUI inside the root manager.

@@ -82,6 +82,25 @@ Environment: `NOTHROTTLE_SOC` / `NOTHROTTLE_BAT` / `NOTHROTTLE_SOC_SOFT` (millid
 
 Defaults: soft **75 C**, hard **80 C** SOC, hard **47 C** battery. `apply --game` raises them to soft **87 C**, hard **92 C** SOC and **45 C** battery, and pins the GPU governor to `performance`.
 
+## One-tap app (root manager WebUI)
+
+`module/` is an optional KernelSU/APatch module that puts a small UI inside your root manager - no APK to build, no separate install, and no background service. It calls the same commands you would type.
+
+Install it by zipping the contents of `module/` (`module.prop` at the zip root) and installing that zip from the manager's **Modules** tab, or by copying the folder to `/data/adb/modules/nothrottle-webui`. The module page then shows a **WebUI** button.
+
+What the buttons do:
+
+| Button | Runs |
+|---|---|
+| **GAME MODE** | `nothrottle ram` then `nothrottle apply --game --force` |
+| **Memory tune only** | `nothrottle ram` (the VM values above) |
+| **Refresh status** | reads governors, guard pid, `thermal_core` state, free memory |
+| **Restore stock** | `nothrottle restore` and `nothrottle ram --restore` |
+
+The page also shows a plain-text fallback with the exact shell commands if the WebUI bridge is missing (older managers). The module ships its own copy of the toolkit in `toolkit/`, so it does not depend on `/data/local/tmp/nothrottle`.
+
+> Root that is re-gained after each boot (exploit-based, loaded as a module) means nothing can run at boot - the WebUI is the point: open the manager, tap once, done.
+
 ## Memory tuning
 
 `ram` writes four sysctls and four DeviceConfig flags. It is not a RAM multiplier - it changes how the kernel caches and flushes, and how the freezer behaves:

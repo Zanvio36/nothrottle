@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>nothrottle</title>
+<style>
+  :root{
+    --bg:#0b0f14; --card:#141a22; --line:#243040; --fg:#e7edf5; --dim:#8b9bb0;
+    --accent:#4da3ff; --ok:#39d98a; --warn:#ffb020; --bad:#ff5c5c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif;
+    padding:16px 14px calc(28px + env(safe-area-inset-bottom));}
+  h1{margin:2px 0 2px;font-size:20px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
+  .row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:13.5px}
+  .row .k{color:var(--dim)}
+  .row .v{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+  button{width:100%;border:0;border-radius:13px;padding:16px;font-size:16px;font-weight:700;
+    color:#04121f;background:var(--accent);margin-bottom:10px;letter-spacing:.2px}
+  button.ghost{background:#1c2634;color:var(--fg);border:1px solid var(--line);font-weight:600}
+  button.danger{background:#2a1a1e;color:#ff8f8f;border:1px solid #43242a;font-weight:600}
+  button:disabled{opacity:.45}
+  pre{background:#0a0e13;border:1px solid var(--line);border-radius:11px;padding:10px;
+    font:12px/1.4 ui-monospace,Menlo,monospace;color:#b9c6d6;max-height:240px;overflow:auto;
+    white-space:pre-wrap;word-break:break-word;margin:0}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#1c2634;color:var(--dim);margin-left:6px}
+  .tag.on{background:#12301f;color:var(--ok)}
+  .tag.off{background:#301616;color:var(--bad)}
+</style>
+</head>
+<body>
+<h1>nothrottle <span id="ver" class="tag">0.3.0</span></h1>
+<div class="sub">One tap. Root is provided by your root manager.</div>
+
+<div class="card" id="statusCard">
+  <div class="row"><span class="k">memory available</span><span class="v" id="s_mem">-</span></div>
+  <div class="row"><span class="k">CPU policy0</span><span class="v" id="s_p0">-</span></div>
+  <div class="row"><span class="k">CPU policy6</span><span class="v" id="s_p6">-</span></div>
+  <div class="row"><span class="k">thermal_core</span><span class="v" id="s_therm">-</span></div>
+  <div class="row"><span class="k">guard</span><span class="v" id="s_guard">-</span></div>
+</div>
+
+<button id="b_game">GAME MODE — max clocks + guard</button>
+<button id="b_ram" class="ghost">Memory tune only</button>
+<button id="b_status" class="ghost">Refresh status</button>
+<button id="b_restore" class="danger">Restore stock</button>
+
+<div class="card">
+  <div class="sub" style="margin:0 0 8px">output</div>
+  <pre id="log">ready</pre>
+</div>
+
+<script>
+var T = "/data/adb/modules/nothrottle-webui/toolkit";
+var STATE = "/data/local/tmp/nothrottle";
+var busy = false;
+
+function $(id){ return document.getElementById(id); }
+
+function setBusy(b){
+  busy = b;
+  ["b_game","b_ram","b_status","b_restore"].forEach(function(id){ $(id).disabled = b; });
+}
+
+function log(s){
+  var el = $("log");
+  el.textContent = s;
+  el.scrollTop = 0;
+}
+
+function bridge(){
+  if (typeof ksu !== "undefined" && ksu && typeof ksu.exec === "function") return ksu;
+  if (window.ksu && typeof window.ksu.exec === "function") return window.ksu;
+  return null;
+}
+
+function run(cmd){
+  var b = bridge();
+  if (!b) {
+    log("Root manager WebUI bridge unavailable.\n\nRun these by hand in a root shell:\n\n" +
+        cmd.replace(/ && /g, "\n"));
+    return Promise.resolve("");
+  }
+  return Promise.resolve(b.exec(cmd, { cwd: "/" })).then(function(r){
+    var out = "";
+    if (r && typeof r === "object") out = (r.stdout || "") + (r.stderr ? "\n" + r.stderr : "");
+    else out = String(r == null ? "" : r);
+    return out;
+  }).catch(function(e){
+    return "error: " + (e && e.message ? e.message : e);
+  });
+}
+
+function readStatus(){
+  var cmd = [
+    'M=$(awk \'/MemAvailable/{print int($2/1024)}\' /proc/meminfo 2>/dev/null); echo "MEM=$M"',
+    'for p in /sys/devices/system/cpu/cpufreq/policy0 /sys/devices/system/cpu/cpufreq/policy6; do',
+    '  echo "CPU $(basename $p)=$(cat $p/scaling_governor 2>/dev/null) $(cat $p/scaling_min_freq 2>/dev/null)-$(cat $p/scaling_max_freq 2>/dev/null)"',
+    'done',
+    'echo "THERM=$(getprop init.svc.thermal_core)"',
+    'G=$(cat /data/local/tmp/nothrottle/guard.pid 2>/dev/null); [ -n "$G" ] && [ -d /proc/$G ] && echo "GUARD=$G" || echo "GUARD=off"'
+  ].join(";");
+  return run(cmd).then(function(out){
+    var m = {};
+    (out || "").split("\n").forEach(function(line){
+      var i = line.indexOf("=");
+      if (i > 0) m[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    });
+    if (m.MEM) $("s_mem").textContent = m.MEM + " MB";
+    if (m["CPU policy0"]) $("s_p0").textContent = m["CPU policy0"];
+    if (m["CPU policy6"]) $("s_p6").textContent = m["CPU policy6"];
+    var t = $("s_therm");
+    t.textContent = m.THERM || "?";
+    t.className = "v" + (m.THERM === "running" ? " tag off" : " tag on");
+    var g = $("s_guard");
+    g.textContent = (m.GUARD && m.GUARD !== "off") ? "pid " + m.GUARD : "off";
+    return out;
+  });
+}
+
+function act(label, cmd){
+  if (busy) return;
+  setBusy(true);
+  log(label + "...");
+  run(cmd).then(function(out){
+    log(label + "\n\n" + (out || "(no output)"));
+    return readStatus();
+  }).then(function(){
+    setBusy(false);
+  }, function(){
+    setBusy(false);
+  });
+}
+
+$("b_game").onclick = function(){
+  act("GAME MODE", "sh " + T + "/nothrottle ram; sh " + T + "/nothrottle apply --game --force");
+};
+$("b_ram").onclick = function(){
+  act("MEMORY TUNE", "sh " + T + "/nothrottle ram");
+};
+$("b_status").onclick = function(){
+  if (busy) return;
+  setBusy(true); log("reading status...");
+  readStatus().then(function(out){ log(out || "(no output)"); setBusy(false); });
+};
+$("b_restore").onclick = function(){
+  act("RESTORE STOCK", "sh " + T + "/nothrottle restore; sh " + T + "/nothrottle ram --restore");
+};
+
+readStatus().then(function(out){ log(out || "ready"); });
+</script>
+</body>
+</html>
