@@ -2,7 +2,7 @@
 # nothrottle - lock Android CPU/GPU clocks and silence vendor thermal daemons.
 # Root only. No flashing, no /system or /vendor writes, dm-verity untouched.
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 [ -z "$SELF_DIR" ] && SELF_DIR="."
 STATE_DIR="${NOTHROTTLE_STATE:-/data/local/tmp/nothrottle}"
@@ -397,10 +397,58 @@ cmd_animate() {
   done
 }
 
+cmd_ram() {
+  need_root ram
+  VM_BACKUP="$STATE_DIR/vm_backup.txt"
+  if [ "$1" = "--restore" ]; then
+    [ -f "$VM_BACKUP" ] || die "no backup at $VM_BACKUP"
+    while IFS='|' read -r k v; do
+      [ -n "$k" ] || continue
+      printf '%s\n' "$v" > "/proc/sys/vm/$k" 2>/dev/null && info "vm.$k -> $v" || warn "vm.$k restore failed"
+    done < "$VM_BACKUP"
+    for nk in activity_manager:use_compaction activity_manager_native_boot:use_freezer \
+              runtime_native:usap_pool_enabled alarm_manager:save_battery_on_idle; do
+      ns=${nk%%:*}; key=${nk##*:}
+      device_config delete "$ns" "$key" >/dev/null 2>&1 && info "device_config $ns/$key removed"
+    done
+    rm -f "$VM_BACKUP"
+    say "memory tune reverted (stock sysctls, device_config defaults)"
+    return
+  fi
+
+  [ -f "$VM_BACKUP" ] || : > "$VM_BACKUP"
+  for kv in vfs_cache_pressure=80 oom_dump_tasks=0 stat_interval=15 dirty_expire_centisecs=500; do
+    k=${kv%%=*}; v=${kv#*=}; p=/proc/sys/vm/$k
+    [ -f "$p" ] || { info "skip (not in kernel): $k"; continue; }
+    grep -q "^$k|" "$VM_BACKUP" 2>/dev/null || printf '%s|%s\n' "$k" "$(cat "$p" 2>/dev/null)" >> "$VM_BACKUP"
+    old=$(cat "$p" 2>/dev/null)
+    if printf '%s\n' "$v" > "$p" 2>/dev/null; then
+      info "vm.$k: $old -> $v"
+    else
+      warn "vm.$k write failed"
+    fi
+  done
+
+  for nk in activity_manager:use_compaction activity_manager_native_boot:use_freezer \
+            runtime_native:usap_pool_enabled alarm_manager:save_battery_on_idle; do
+    ns=${nk%%:*}; key=${nk##*:}
+    if device_config put "$ns" "$key" true >/dev/null 2>&1; then
+      info "device_config $ns/$key=true"
+    else
+      warn "device_config $ns/$key failed"
+    fi
+  done
+
+  say "memory tuned. undo with: nothrottle ram --restore"
+  info "available: $(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}') MB"
+  info "note: sysctls reset on reboot. install-boot re-applies them, but only if root exists at boot"
+  info "(exploit-based root that must be re-run after boot: run 'nothrottle ram' from that root shell)"
+}
+
 cmd_install_boot() {
   need_root install-boot
   [ -d /data/adb/service.d ] || die "/data/adb/service.d not found (Magisk/KernelSU required)"
-  printf '#!/system/bin/sh\nsleep 45\nsh %s/nothrottle apply --force >/dev/null 2>&1\n' "$SELF_DIR" > /data/adb/service.d/zz_nothrottle.sh
+  printf '#!/system/bin/sh\nsleep 45\nsh %s/nothrottle apply --force >/dev/null 2>&1\nsh %s/nothrottle ram >/dev/null 2>&1\n' "$SELF_DIR" "$SELF_DIR" > /data/adb/service.d/zz_nothrottle.sh
   chmod 755 /data/adb/service.d/zz_nothrottle.sh
   say "installed /data/adb/service.d/zz_nothrottle.sh (runs 45s after boot)"
   warn "only useful if root is available at boot (not on exploit-only root)"
@@ -428,7 +476,9 @@ usage: sh nothrottle <command> [options]
   debloat <list> [--restore]                 disable/enable packages from a list
   aot <pkg>...                               AOT-compile packages (cmd package compile -m speed)
   animate [scale]                            set animation scales (default 0.5)
-  install-boot | uninstall-boot              optional /data/adb/service.d hook
+  ram [--restore]                            VM/memory tune that also survives reboot via
+                                             install-boot; --restore puts stock values back
+  install-boot | uninstall-boot              optional /data/adb/service.d hook (applies lock + ram)
 
 env: NOTHROTTLE_SOC, NOTHROTTLE_BAT, NOTHROTTLE_SOC_SOFT (millidegC),
      NOTHROTTLE_STATE (dir)
@@ -461,6 +511,7 @@ main() {
     debloat) cmd_debloat "$@" ;;
     aot) cmd_aot "$@" ;;
     animate) cmd_animate "$@" ;;
+    ram) cmd_ram "$@" ;;
     install-boot) cmd_install_boot ;;
     uninstall-boot) cmd_uninstall_boot ;;
     ""|-h|--help|help) usage ;;

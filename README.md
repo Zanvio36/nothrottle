@@ -68,7 +68,8 @@ Read the doctor output once. If the profile picked the wrong vendor, copy a prof
 | `debloat <list> [--restore]` | disable/enable packages from a list file |
 | `aot <pkg>...` | AOT compile apps (`cmd package compile -m speed`) |
 | `animate [scale]` | animation scales, default `0.5` |
-| `install-boot` / `uninstall-boot` | optional `/data/adb/service.d` hook |
+| `ram [--restore]` | memory sysctls + DeviceConfig toggles; `--restore` puts stock values back |
+| `install-boot` / `uninstall-boot` | optional `/data/adb/service.d` hook: re-applies the lock and the memory tune after every boot |
 
 Environment: `NOTHROTTLE_SOC` / `NOTHROTTLE_BAT` / `NOTHROTTLE_SOC_SOFT` (millidegrees) override the guard limits, `NOTHROTTLE_STATE` moves the state directory.
 
@@ -80,6 +81,33 @@ Environment: `NOTHROTTLE_SOC` / `NOTHROTTLE_BAT` / `NOTHROTTLE_SOC_SOFT` (millid
 2. **hard** - calls `restore`: back to stock clocks, stock governor, thermal daemon running, zones enabled.
 
 Defaults: soft **75 C**, hard **80 C** SOC, hard **47 C** battery. `apply --game` raises them to soft **87 C**, hard **92 C** SOC and **45 C** battery, and pins the GPU governor to `performance`.
+
+## Memory tuning
+
+`ram` writes four sysctls and four DeviceConfig flags. It is not a RAM multiplier - it changes how the kernel caches and flushes, and how the freezer behaves:
+
+| Key | Stock (A06) | Value | Why |
+|---|---|---|---|
+| `vm.vfs_cache_pressure` | 120 | 80 | keep inode/dentry cache, apps relaunch faster |
+| `vm.oom_dump_tasks` | 1 | 0 | stop dumping the whole task table on OOM |
+| `vm.stat_interval` | 1 | 15 | less `/proc/vmstat` scanning |
+| `vm.dirty_expire_centisecs` | 1500 | 500 | dirty pages reach disk sooner, fewer long stalls |
+| `activity_manager use_compaction` | false | true | defragment memory instead of killing |
+| `activity_manager_native_boot use_freezer` | false | true | freeze cached apps instead of reclaiming them |
+| `runtime_native usap_pool_enabled` | false | true | keep a pre-forked app process pool |
+| `alarm_manager save_battery_on_idle` | false | true | fewer alarm wakeups in idle |
+
+The sysctls live in `/proc` and reset on every boot, so a boot hook is the only way to keep them. `ram` saves the stock values once to `$STATE_DIR/vm_backup.txt`; `ram --restore` reads that file and returns the phone to stock. DeviceConfig values persist on their own, `--restore` deletes them.
+
+Values adopted after reading [Drsexo/Frosty](https://github.com/Drsexo/Frosty)'s RAM optimizer. Deliberately not copied: its `dirty_ratio 20/5` (long writeback stalls on eMMC), swapping the ZRAM algorithm on a running phone (needs `swapoff` of live swap), and its screen-off `am force-stop` cleaner (kills notifications).
+
+To keep it across reboots, either run `install-boot` (lock + memory) or add the two-line hook yourself:
+
+```sh
+su -c 'printf "#!/system/bin/sh\nsleep 20\nsh /data/local/tmp/nothrottle/nothrottle ram >/dev/null 2>&1\n" > /data/adb/service.d/zz_nothrottle_ram.sh && chmod 755 /data/adb/service.d/zz_nothrottle_ram.sh'
+```
+
+> **Root that does not survive a reboot** (exploit-based root loaded as a kernel module after boot, e.g. on a locked bootloader): KernelSU's `/data/adb/service.d` stage never runs, because `ksud` only starts once the exploit loads the module. The hook above is then inert. Run `nothrottle ram` (or `install-boot`'s lock) from the root shell you get after re-gaining root; nothing else can run as root at boot.
 
 This split exists because of a real report: on the A06 5G an 80 C guard fired after ~10 minutes of gaming and dumped the phone straight back to stock, which felt like the throttling the user was trying to avoid. Now it steps down first. Raise the hard limit if you accept more heat:
 
