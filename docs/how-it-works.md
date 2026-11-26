@@ -44,13 +44,19 @@ If you see `cpufreq` or `cpu-cluster` there, the kernel does real mitigation. Le
 5. **Stop the daemon** - `stop <service>` through init, so init does not restart it (it stays stopped until `start`).
 6. **Start the guard** - `guard.sh` in the background, logging to `nothrottle.log`.
 
+With `--game` the GPU governor is set to `performance` instead of only raising its floor, and the guard thresholds move up to 87 C soft / 92 C hard.
+
 `stop` is better than `kill` or `freeze`: init owns the service, `stop` records the state, `start` brings it back cleanly, and there is no binder client left talking to a frozen process.
 
 ## Why the guard exists
 
 After `apply` the CPU has no thermal policy at all. That is the point. But it also means the phone will happily run at 2.4 GHz until the battery complains.
 
-The guard restores **everything** - not just the governor - because a half-restore is worse than none:
+It has two stages, so a hot phone degrades before it gives up:
+
+**Soft (default 75 C, `--game` 87 C)** - `soften`: the governor switches to `schedutil` and the frequency floor returns to stock while the ceiling stays pinned and vendor thermal stays off. You lose some peak performance, not the whole setup. This runs once.
+
+**Hard (default 80 C, `--game` 92 C, or 47 C / 45 C battery)** - the guard restores **everything**, not just the governor, because a half-restore is worse than none:
 
 - governor back to `sugov_ext`/`schedutil`
 - min/max back to the saved values
@@ -59,6 +65,10 @@ The guard restores **everything** - not just the governor - because a half-resto
 - guard exits
 
 `restore` accepts `NOTHROTTLE_FROM_GUARD=1` so the guard does not try to kill itself.
+
+The recorded `scaling_min_freq` is written twice during `restore`: once with the rest, and again after the vendor daemon has restarted, because `thermal_core` raises the floor while starting up and would otherwise leave a stale minimum behind.
+
+Why the split matters: on the A06 5G an 80 C single-threshold guard fired after ~10 minutes of gaming, restored stock mid-session, and the phone felt exactly like it was throttling again. A soft stage that only lowers clocks keeps gaming usable without removing the safety net.
 
 ## State format
 

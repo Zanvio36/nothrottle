@@ -2,7 +2,7 @@
 # nothrottle - lock Android CPU/GPU clocks and silence vendor thermal daemons.
 # Root only. No flashing, no /system or /vendor writes, dm-verity untouched.
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 SELF_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 [ -z "$SELF_DIR" ] && SELF_DIR="."
 STATE_DIR="${NOTHROTTLE_STATE:-/data/local/tmp/nothrottle}"
@@ -127,7 +127,7 @@ pin_gpu() {
     warn "no GPU devfreq node found - GPU untouched"
     return
   fi
-  if [ "$GPU_MAX" = "1" ]; then
+  if [ "$GPU_MAX" = "1" ] || [ "$GAME" = "1" ]; then
     ga=$(cat "$GPU/available_governors" 2>/dev/null)
     case " $ga " in
       *" performance "*) echo performance > "$GPU/governor" 2>/dev/null ;;
@@ -167,15 +167,21 @@ stop_thermal() {
 }
 
 start_guard() {
-  soc=${NOTHROTTLE_SOC:-$GUARD_SOC}
-  bat=${NOTHROTTLE_BAT:-$GUARD_BAT}
+  if [ "$GAME" = "1" ]; then
+    def_soc=92000; def_bat=45000
+  else
+    def_soc=$GUARD_SOC; def_bat=$GUARD_BAT
+  fi
+  soc=${NOTHROTTLE_SOC:-$def_soc}
+  bat=${NOTHROTTLE_BAT:-$def_bat}
+  soft=${NOTHROTTLE_SOC_SOFT:-$((soc - 5000))}
   if [ -f "$GUARD_PID_FILE" ]; then
     old=$(cat "$GUARD_PID_FILE" 2>/dev/null)
     [ -n "$old" ] && [ -d "/proc/$old" ] && kill "$old" 2>/dev/null
   fi
-  nohup sh "$SELF_DIR/guard.sh" "$soc" "$bat" "$SELF_DIR" "$STATE_DIR" >> "$LOG" 2>&1 &
+  nohup sh "$SELF_DIR/guard.sh" "$soc" "$bat" "$SELF_DIR" "$STATE_DIR" "$soft" >> "$LOG" 2>&1 &
   echo $! > "$GUARD_PID_FILE"
-  info "guard: pid $(cat "$GUARD_PID_FILE") limits soc>$soc bat>$bat"
+  info "guard: pid $(cat "$GUARD_PID_FILE") soften at soc>$(printf '%s' "$soft") restore at soc>$soc bat>$bat"
 }
 
 kill_guard() {
@@ -205,6 +211,35 @@ cmd_apply() {
   say "applied. run 'nothrottle restore' to undo."
 }
 
+cmd_soften() {
+  need_root soften
+  [ -f "$STATE_FILE" ] || die "not applied - nothing to soften"
+  if grep -q '^soft|' "$STATE_FILE" 2>/dev/null; then
+    info "already softened"
+    return 0
+  fi
+  printf 'soft|1\n' >> "$STATE_FILE"
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$p" ] || continue
+    orig=""
+    while IFS='|' read -r k a b c d; do
+      [ "$k" = "policy" ] || continue
+      [ "$a" = "$p" ] && orig="$d"
+    done < "$STATE_FILE"
+    case "$orig" in ''|*[!0-9]*) orig="" ;; esac
+    # governor first: 'performance' forces min back up to max, so relax it before
+    # lowering the floor. Ceiling stays pinned and vendor thermal stays off.
+    govs=$(cat "$p/scaling_available_governors" 2>/dev/null)
+    case " $govs " in
+      *" schedutil "*) echo schedutil > "$p/scaling_governor" 2>/dev/null ;;
+      *) echo conservative > "$p/scaling_governor" 2>/dev/null ;;
+    esac
+    [ -n "$orig" ] && echo "$orig" > "$p/scaling_min_freq" 2>/dev/null
+    info "$(basename "$p"): $(cat "$p/scaling_governor" 2>/dev/null) $(cat "$p/scaling_min_freq" 2>/dev/null)-$(cat "$p/scaling_max_freq" 2>/dev/null)"
+  done
+  say "softened: clocks may drop, vendor thermal stays off."
+}
+
 cmd_restore() {
   need_root restore
   load_profiles
@@ -227,7 +262,6 @@ cmd_restore() {
         # governor first: the kernel then allows max to drop below the pinned min
         [ -n "$b" ] && echo "$b" > "$a/scaling_governor" 2>/dev/null
         [ -n "$c" ] && echo "$c" > "$a/scaling_max_freq" 2>/dev/null
-        [ -n "$d" ] && echo "$d" > "$a/scaling_min_freq" 2>/dev/null
         info "$(basename "$a"): $b $d-$c"
         ;;
       gpu)
@@ -246,6 +280,14 @@ cmd_restore() {
         ;;
     esac
   done < "$STATE_FILE"
+  # second pass: vendor daemons raise the floor while restarting, so the recorded
+  # minimum is written last, once everything else is back up.
+  while IFS='|' read -r k a b c d; do
+    [ "$k" = "policy" ] || continue
+    [ -d "$a" ] || continue
+    case "$d" in ''|*[!0-9]*) continue ;; esac
+    echo "$d" > "$a/scaling_min_freq" 2>/dev/null
+  done < "$STATE_FILE"
   rm -f "$STATE_FILE"
   say "restored. reboot also clears everything."
 }
@@ -260,6 +302,7 @@ cmd_status() {
     info "guard: not running"
   fi
   [ -f "$STATE_FILE" ] && info "state: applied" || info "state: not applied"
+  grep -q '^soft|' "$STATE_FILE" 2>/dev/null && info "mode: softened (clocks may drop)"
   for p in /sys/devices/system/cpu/cpufreq/policy*; do
     [ -d "$p" ] || continue
     info "$(basename "$p"): gov=$(cat "$p/scaling_governor" 2>/dev/null) cur=$(cat "$p/scaling_cur_freq" 2>/dev/null) max=$(cat "$p/scaling_max_freq" 2>/dev/null)"
@@ -375,8 +418,11 @@ nothrottle $VERSION - lock clocks, silence vendor thermal daemons (root)
 
 usage: sh nothrottle <command> [options]
 
-  apply [--gpu-max] [--no-zones] [--force]   lock clocks, stop vendor thermal, start guard
+  apply [--game] [--gpu-max] [--no-zones] [--force]
+                                             lock clocks, stop vendor thermal, start guard
+                                             --game: GPU governor=performance, guard 92C/45C
   restore                                    undo everything (guard calls this too)
+  soften                                     let clocks drop, keep vendor thermal off
   status                                     what is active right now
   doctor                                     dump device capabilities (paste into a device report)
   debloat <list> [--restore]                 disable/enable packages from a list
@@ -384,19 +430,21 @@ usage: sh nothrottle <command> [options]
   animate [scale]                            set animation scales (default 0.5)
   install-boot | uninstall-boot              optional /data/adb/service.d hook
 
-env: NOTHROTTLE_SOC (millidegC), NOTHROTTLE_BAT (millidegC), NOTHROTTLE_STATE (dir)
+env: NOTHROTTLE_SOC, NOTHROTTLE_BAT, NOTHROTTLE_SOC_SOFT (millidegC),
+     NOTHROTTLE_STATE (dir)
 EOF
 }
 
 main() {
   cmd=${1:-}; shift 2>/dev/null
-  GPU_MAX=0; NO_ZONES=0; FORCE=0
+  GPU_MAX=0; NO_ZONES=0; FORCE=0; GAME=0
   args=""
   for a in "$@"; do
     case "$a" in
       --gpu-max) GPU_MAX=1 ;;
       --no-zones) NO_ZONES=1 ;;
       --force) FORCE=1 ;;
+      --game) GAME=1 ;;
       *) args="$args $a" ;;
     esac
   done
@@ -406,6 +454,7 @@ main() {
     apply)
       if [ "$FORCE" = "1" ] && [ -f "$STATE_FILE" ]; then rm -f "$STATE_FILE"; fi
       cmd_apply ;;
+    soften) GAME=0; cmd_soften ;;
     restore) cmd_restore ;;
     status) cmd_status ;;
     doctor) load_profiles; cmd_doctor ;;

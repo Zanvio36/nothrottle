@@ -4,7 +4,9 @@ Read this before you run `apply` on a phone you need.
 
 ## Heat
 
-`performance` governor plus max frequency disables the OS thermal policy for the CPU. The guard is the only remaining limit. A 2.4 GHz big core in a plastic body will hit 70 C in minutes of gaming and 80 C+ under sustained load.
+`performance` governor plus max frequency disables the OS thermal policy for the CPU. The guard is the only remaining limit. A 2.4 GHz big core in a plastic body will hit 70 C in minutes of gaming and 80 C+ under sustained load - measured on a Galaxy A06 5G: 80.5 C after ~10 minutes of gaming, which tripped the old single 80 C guard.
+
+That is why `--game` exists: it lets the chip reach 87 C before stepping the clocks down and 92 C before full restore. 92 C is junction temperature, not surface temperature, but it is still hot enough to be uncomfortable and to age the battery faster.
 
 Consequences of running hot: battery wear, screen brightness reduction, modem instability, and in the worst case a thermal shutdown.
 
@@ -14,7 +16,7 @@ Do **not** game while charging. Charging adds 5-10 W to a device that is already
 
 `thermal_core` and `thermal-engine` also implement charging limits (current taper, battery temperature cutoffs). Stopping them removes that policy too. The battery protection in the charger IC still works, but the graceful taper does not.
 
-If you use the phone as a daily driver, run `restore` before charging overnight, or keep the default 47 C battery guard.
+If you use the phone as a daily driver, run `restore` before charging overnight, or keep the battery guard (47 C default, 45 C with `--game`).
 
 ## Battery life
 

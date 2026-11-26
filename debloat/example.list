@@ -11,6 +11,44 @@ com.facebook.aura
 com.samsung.android.bixby.agent
 com.samsung.android.bixby.wakeup
 com.samsung.android.app.spage
+# Bixby wake-up daemon + voice service on A-series (freed ~160 MB on an A06 5G).
+# Disabling daemonapp means the side button no longer opens Bixby; remap it under
+# Settings > Advanced features > Side button if you want it for something else.
+com.sec.android.daemonapp
+com.samsung.android.intellivoiceservice
+com.samsung.android.easysetup
 
 # Duplicate/legacy browsers
 com.android.browser
+
+# Samsung preloads with no system role. Verified on a Galaxy A06 5G (Android 16),
+# where disabling these left dialer, messages, camera, gallery, keyboard and
+# launcher resolvable and produced no crash storms. Anything that touches calls
+# (imsservice, epdg), Knox, sdhms, badge/media providers or the launcher is
+# deliberately absent from this list.
+com.samsung.android.app.routines
+com.samsung.android.dynamiclock
+com.samsung.android.mdx.kit
+com.samsung.android.aremoji
+com.sec.android.mimage.avatarstickers
+com.samsung.android.forest
+com.sec.android.easyMover
+com.sec.android.easyMover.Agent
+com.sec.android.app.shealth
+com.sec.android.app.samsungapps
+com.samsung.android.smartmirroring
+com.samsung.android.allshare.service.mediashare
+com.sec.android.app.voicenote
+com.samsung.android.callassistant
+com.samsung.android.sm.devicesecurity
+com.samsung.android.shortcutbackupservice
+com.samsung.safetyinformation
+com.samsung.android.app.parentalcare
+com.samsung.android.setupindiaservicestnc
+com.samsung.android.widget.pictureframe
+com.sec.android.widgetapp.easymodecontactswidget
+com.samsung.android.app.watchmanagerstub
+com.sec.android.diagmonagent
+com.samsung.android.beaconmanager
+com.aura.oobe.samsung
+com.samsung.android.mapsagent
